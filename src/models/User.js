@@ -22,86 +22,65 @@ const UserSchema = new mongoose.Schema(
       type: String,
       required: [true, "Password is required"],
       minlength: [8, "Password must be at least 8 characters"],
-      select: false, // Never return password in queries by default
+      select: false,
     },
     role: {
       type: String,
       enum: ["user", "moderator", "admin"],
       default: "user",
     },
-
-    // Email Verification
-    isEmailVerified: {
-      type: Boolean,
-      default: false,
-    },
-    emailVerificationToken: {
+    // Security Question for password reset
+    securityQuestion: {
       type: String,
-      select: false,
+      required: [true, "Security question is required"],
     },
-    emailVerificationExpires: {
-      type: Date,
-      select: false,
-    },
-
-    // Password Reset
-    passwordResetToken: {
+    securityAnswer: {
       type: String,
+      required: [true, "Security answer is required"],
       select: false,
     },
-    passwordResetExpires: {
-      type: Date,
-      select: false,
-    },
-
-    // Refresh Token (store hashed)
-    refreshToken: {
-      type: String,
-      select: false,
-    },
-
-    // Account status
-    isActive: {
-      type: Boolean,
-      default: true,
-    },
-    lastLogin: {
-      type: Date,
-    },
+    isEmailVerified: { type: Boolean, default: true },
+    emailVerificationToken: { type: String, select: false },
+    emailVerificationExpires: { type: Date, select: false },
+    passwordResetToken: { type: String, select: false },
+    passwordResetExpires: { type: Date, select: false },
+    refreshToken: { type: String, select: false },
+    isActive: { type: Boolean, default: true },
+    lastLogin: { type: Date },
   },
-  {
-    timestamps: true, // Adds createdAt and updatedAt automatically
-  }
+  { timestamps: true }
 );
 
-// ─── Indexes ───────────────────────────────────────────────────────────────────
-// email index already created by unique:true
-UserSchema.index({ emailVerificationToken: 1 });
-UserSchema.index({ passwordResetToken: 1 });
-UserSchema.index({ role: 1 });
+UserSchema.index({ email: 1 });
 
-// ─── Pre-save Hook: Hash password ──────────────────────────────────────────────
 UserSchema.pre("save", async function (next) {
-  // Only hash if password was modified
-  if (!this.isModified("password")) return next();
-
-  const salt = await bcrypt.genSalt(12);
-  this.password = await bcrypt.hash(this.password, salt);
+  if (this.isModified("password")) {
+    const salt = await bcrypt.genSalt(12);
+    this.password = await bcrypt.hash(this.password, salt);
+  }
+  // Hash security answer too
+  if (this.isModified("securityAnswer")) {
+    const salt = await bcrypt.genSalt(10);
+    this.securityAnswer = await bcrypt.hash(this.securityAnswer.toLowerCase().trim(), salt);
+  }
   next();
 });
 
-// ─── Instance Method: Compare password ─────────────────────────────────────────
 UserSchema.methods.comparePassword = async function (candidatePassword) {
   return bcrypt.compare(candidatePassword, this.password);
 };
 
-// ─── Instance Method: Safe public profile ──────────────────────────────────────
+UserSchema.methods.compareSecurityAnswer = async function (candidateAnswer) {
+  return bcrypt.compare(candidateAnswer.toLowerCase().trim(), this.securityAnswer);
+};
+
 UserSchema.methods.toPublicProfile = function () {
   return {
     id: this._id,
     name: this.name,
     email: this.email,
     role: this.role,
+    securityQuestion: this.securityQuestion,
     isEmailVerified: this.isEmailVerified,
     isActive: this.isActive,
     lastLogin: this.lastLogin,

@@ -2,11 +2,9 @@ const User = require("../models/User");
 const {
   generateAccessToken,
   generateRefreshToken,
-  generateEmailVerificationToken,
   generatePasswordResetToken,
   verifyToken,
 } = require("../utils/generateTokens");
-const { sendVerificationEmail, sendPasswordResetEmail, sendWelcomeEmail } = require("../utils/email");
 const { successResponse, errorResponse } = require("../utils/apiResponse");
 const { deleteCache } = require("../config/redis");
 const bcrypt = require("bcryptjs");
@@ -26,60 +24,98 @@ const setTokenCookies = (res, accessToken, refreshToken) => {
   });
 };
 
+// ─── REGISTER ────────────────────────────────────────────────────────────────────
 const register = async (req, res) => {
   try {
-    const { name, email, password } = req.body;
+    const { name, email, password, securityQuestion, securityAnswer } = req.body;
+
+    if (!securityQuestion || !securityAnswer) {
+      return errorResponse(res, 400, "Security question and answer are required.");
+    }
+
     const existingUser = await User.findOne({ email });
     if (existingUser) return errorResponse(res, 409, "An account with this email already exists.");
-    const { token: verificationToken, expires: verificationExpires } = generateEmailVerificationToken();
+
     const user = await User.create({
       name, email, password,
+      securityQuestion, securityAnswer,
       isEmailVerified: true,
-      emailVerificationToken: verificationToken,
-      emailVerificationExpires: verificationExpires,
     });
-    try { await sendVerificationEmail(user, verificationToken); } catch (e) { console.error("Email failed:", e.message); }
-    return successResponse(res, 201, "Registration successful! You can now log in.", { user: user.toPublicProfile() });
+
+    return successResponse(res, 201, "Registration successful! You can now log in.", {
+      user: user.toPublicProfile(),
+    });
   } catch (error) {
     console.error("Register error:", error);
     return errorResponse(res, 500, "Registration failed.", error.message);
   }
 };
 
-const verifyEmail = async (req, res) => {
-  try {
-    const { token } = req.query;
-    if (!token) return errorResponse(res, 400, "Verification token is required.");
-    const user = await User.findOne({ emailVerificationToken: token, emailVerificationExpires: { $gt: Date.now() } }).select("+emailVerificationToken +emailVerificationExpires");
-    if (!user) return errorResponse(res, 400, "Invalid or expired verification token.");
-    user.isEmailVerified = true;
-    user.emailVerificationToken = undefined;
-    user.emailVerificationExpires = undefined;
-    await user.save();
-    try { await sendWelcomeEmail(user); } catch {}
-    return successResponse(res, 200, "Email verified successfully!");
-  } catch (error) {
-    return errorResponse(res, 500, "Email verification failed.", error.message);
-  }
-};
-
-const resendVerificationEmail = async (req, res) => {
+// ─── GET SECURITY QUESTION ────────────────────────────────────────────────────────
+const getSecurityQuestion = async (req, res) => {
   try {
     const { email } = req.body;
-    const user = await User.findOne({ email }).select("+emailVerificationToken +emailVerificationExpires");
+    const user = await User.findOne({ email });
     if (!user) return errorResponse(res, 404, "No account found with this email.");
-    if (user.isEmailVerified) return errorResponse(res, 400, "Email is already verified.");
-    const { token, expires } = generateEmailVerificationToken();
-    user.emailVerificationToken = token;
-    user.emailVerificationExpires = expires;
-    await user.save();
-    await sendVerificationEmail(user, token);
-    return successResponse(res, 200, "Verification email resent.");
+    return successResponse(res, 200, "Security question fetched.", {
+      securityQuestion: user.securityQuestion,
+    });
   } catch (error) {
-    return errorResponse(res, 500, "Failed to resend verification email.", error.message);
+    return errorResponse(res, 500, "Failed to fetch security question.", error.message);
   }
 };
 
+// ─── VERIFY SECURITY ANSWER & GET RESET TOKEN ─────────────────────────────────────
+const verifySecurityAnswer = async (req, res) => {
+  try {
+    const { email, securityAnswer } = req.body;
+    const user = await User.findOne({ email }).select("+securityAnswer");
+    if (!user) return errorResponse(res, 404, "No account found with this email.");
+
+    const isMatch = await user.compareSecurityAnswer(securityAnswer);
+    if (!isMatch) return errorResponse(res, 400, "Incorrect security answer.");
+
+    // Generate a short-lived reset token
+    const { token, expires } = generatePasswordResetToken();
+    user.passwordResetToken = token;
+    user.passwordResetExpires = expires;
+    await user.save();
+
+    return successResponse(res, 200, "Answer verified! You can now reset your password.", {
+      resetToken: token,
+    });
+  } catch (error) {
+    return errorResponse(res, 500, "Verification failed.", error.message);
+  }
+};
+
+// ─── RESET PASSWORD ────────────────────────────────────────────────────────────────
+const resetPassword = async (req, res) => {
+  try {
+    const { token, password } = req.body;
+    if (!token) return errorResponse(res, 400, "Reset token is required.");
+
+    const user = await User.findOne({
+      passwordResetToken: token,
+      passwordResetExpires: { $gt: Date.now() },
+    }).select("+passwordResetToken +passwordResetExpires");
+
+    if (!user) return errorResponse(res, 400, "Invalid or expired reset token.");
+
+    user.password = password;
+    user.passwordResetToken = undefined;
+    user.passwordResetExpires = undefined;
+    user.refreshToken = undefined;
+    await user.save();
+
+    await deleteCache(`user:${user._id}`);
+    return successResponse(res, 200, "Password reset successful! Please log in.");
+  } catch (error) {
+    return errorResponse(res, 500, "Password reset failed.", error.message);
+  }
+};
+
+// ─── LOGIN ────────────────────────────────────────────────────────────────────────
 const login = async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -102,6 +138,7 @@ const login = async (req, res) => {
   }
 };
 
+// ─── LOGOUT ───────────────────────────────────────────────────────────────────────
 const logout = async (req, res) => {
   try {
     await User.findByIdAndUpdate(req.user.id, { refreshToken: null });
@@ -114,6 +151,7 @@ const logout = async (req, res) => {
   }
 };
 
+// ─── REFRESH TOKEN ────────────────────────────────────────────────────────────────
 const refreshToken = async (req, res) => {
   try {
     const token = req.cookies?.refreshToken || req.body?.refreshToken;
@@ -136,48 +174,12 @@ const refreshToken = async (req, res) => {
   }
 };
 
-const forgotPassword = async (req, res) => {
-  try {
-    const { email } = req.body;
-    const user = await User.findOne({ email });
-    if (!user) return successResponse(res, 200, "If an account exists, a reset link has been sent.");
-    const { token, expires } = generatePasswordResetToken();
-    user.passwordResetToken = token;
-    user.passwordResetExpires = expires;
-    await user.save();
-    try {
-      await sendPasswordResetEmail(user, token);
-    } catch (emailErr) {
-      console.error("Reset email failed:", emailErr.message);
-      return errorResponse(res, 500, "Failed to send reset email. Please try again later.");
-    }
-    return successResponse(res, 200, "Password reset email sent.");
-  } catch (error) {
-    return errorResponse(res, 500, "Failed to send reset email.", error.message);
-  }
-};
-
-const resetPassword = async (req, res) => {
-  try {
-    const { token } = req.query;
-    const { password } = req.body;
-    if (!token) return errorResponse(res, 400, "Reset token is required.");
-    const user = await User.findOne({ passwordResetToken: token, passwordResetExpires: { $gt: Date.now() } }).select("+passwordResetToken +passwordResetExpires");
-    if (!user) return errorResponse(res, 400, "Invalid or expired reset token.");
-    user.password = password;
-    user.passwordResetToken = undefined;
-    user.passwordResetExpires = undefined;
-    user.refreshToken = undefined;
-    await user.save();
-    await deleteCache(`user:${user._id}`);
-    return successResponse(res, 200, "Password reset successful. Please log in.");
-  } catch (error) {
-    return errorResponse(res, 500, "Password reset failed.", error.message);
-  }
-};
-
+// ─── GET ME ───────────────────────────────────────────────────────────────────────
 const getMe = async (req, res) => {
   return successResponse(res, 200, "User fetched.", { user: req.user });
 };
 
-module.exports = { register, verifyEmail, resendVerificationEmail, login, logout, refreshToken, forgotPassword, resetPassword, getMe };
+module.exports = {
+  register, login, logout, refreshToken, getMe,
+  getSecurityQuestion, verifySecurityAnswer, resetPassword,
+};

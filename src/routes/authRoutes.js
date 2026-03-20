@@ -1,38 +1,29 @@
 const express = require("express");
 const router = express.Router();
 const {
-  register,
-  verifyEmail,
-  resendVerificationEmail,
-  login,
-  logout,
-  refreshToken,
-  forgotPassword,
-  resetPassword,
-  getMe,
+  register, login, logout, refreshToken, getMe,
+  getSecurityQuestion, verifySecurityAnswer, resetPassword,
 } = require("../controllers/authController");
 const { protect } = require("../middleware/authMiddleware");
 const rateLimit = require("express-rate-limit");
 
-// Strict rate limiter for auth endpoints
 const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 10,
+  windowMs: 15 * 60 * 1000,
+  max: 20,
   message: { success: false, message: "Too many attempts. Please try again in 15 minutes." },
-  standardHeaders: true,
-  legacyHeaders: false,
 });
 
-// ─── Public Routes ───────────────────────────────────────────────────────────────
+// Public routes
 router.post("/register", authLimiter, register);
-router.get("/verify-email", verifyEmail);
-router.post("/resend-verification", authLimiter, resendVerificationEmail);
 router.post("/login", authLimiter, login);
 router.post("/refresh-token", refreshToken);
-router.post("/forgot-password", authLimiter, forgotPassword);
+
+// Password reset via security question (no email needed)
+router.post("/get-security-question", getSecurityQuestion);
+router.post("/verify-security-answer", authLimiter, verifySecurityAnswer);
 router.post("/reset-password", authLimiter, resetPassword);
 
-// ─── Protected Routes ────────────────────────────────────────────────────────────
+// Protected routes
 router.post("/logout", protect, logout);
 router.get("/me", protect, getMe);
 
