@@ -1,0 +1,8 @@
+[33mbd91793[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m, [m[1;31morigin/main[m[33m)[m fix: security question forgot password
+[33meb5dfc5[m fix: remove AuthPage, fix routing
+[33ma631a89[m fix: simplify reset password page
+[33m50174a3[m fix: security question forgot password
+[33m6bccf45[m feat: security question password reset UI
+[33m5b7e084[m fix: add timeout to auth check
+[33m4746e9a[m initial commit
+[33mc50a329[m init

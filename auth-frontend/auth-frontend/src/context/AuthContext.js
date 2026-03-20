@@ -7,19 +7,12 @@ export const AuthProvider = ({ children }) => {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  // Check if user is logged in on mount
   const checkAuth = useCallback(async () => {
-    // 8 second timeout — stops infinite loading
-    const timeout = setTimeout(() => {
-      setUser(null);
-      setLoading(false);
-    }, 8000);
-
     try {
       const { data } = await authAPI.getMe();
-      clearTimeout(timeout);
       setUser(data.data?.user || null);
     } catch {
-      clearTimeout(timeout);
       setUser(null);
     } finally {
       setLoading(false);
